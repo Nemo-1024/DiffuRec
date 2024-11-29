@@ -1,6 +1,6 @@
 import torch.utils.data as data_utils
 import torch
-
+from tqdm import tqdm
 
 class TrainDataset(data_utils.Dataset):
     def __init__(self, id2seq, max_len):
@@ -28,9 +28,13 @@ class Data_Train():
         self.u2seq = data_train
         self.max_len = args.max_len
         self.batch_size = args.batch_size
-        self.split_onebyone()
+        self.id_seq = data_train
+        if args.split_onebyone:
+            self.split_onebyone()
+
 
     def split_onebyone(self):
+    # 分割成了最小长度为2的交互递增序列
         self.id_seq = {}
         self.id_seq_user = {}
         idx = 0
@@ -144,3 +148,20 @@ class Data_CHLS():
         dataset = CHLSDataset(self.data, self.max_len)
         dataloader = data_utils.DataLoader(dataset, batch_size=self.batch_size, shuffle=False, pin_memory=True)
         return dataloader
+
+
+def _extract_into_tensor(arr, timesteps, broadcast_shape):
+    """
+    Extract values from a 1-D numpy array for a batch of indices.
+
+    :param arr: the 1-D numpy array.
+    :param timesteps: a tensor of indices into the array to extract.
+    :param broadcast_shape: a larger shape of K dimensions with the batch
+                            dimension equal to the length of timesteps.
+    :return: a tensor of shape [batch_size, 1, ...] where the shape has K dims.
+    """
+
+    res = torch.from_numpy(arr).to(device=timesteps.device)[timesteps].float()
+    while len(res.shape) < len(broadcast_shape):
+        res = res[..., None]
+    return res.expand(broadcast_shape)

@@ -5,7 +5,7 @@ import numpy as np
 import math
 import torch
 import torch.nn.functional as F
-
+from common import *
 
 def _extract_into_tensor(arr, timesteps, broadcast_shape):
     """
@@ -17,7 +17,7 @@ def _extract_into_tensor(arr, timesteps, broadcast_shape):
                             dimension equal to the length of timesteps.
     :return: a tensor of shape [batch_size, 1, ...] where the shape has K dims.
     """
-    
+
     res = th.from_numpy(arr).to(device=timesteps.device)[timesteps].float()
     while len(res.shape) < len(broadcast_shape):
         res = res[..., None]
@@ -228,7 +228,7 @@ class MultiHeadedAttention(nn.Module):
         batch_size = q.shape[0]
         q, k, v = [l(x).view(batch_size, -1, self.num_heads, self.size_head).transpose(1, 2) for l, x in zip(self.linear_layers, (q, k, v))]
         corr = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(q.size(-1))
-        
+
         if mask is not None:
             mask = mask.unsqueeze(1).repeat([1, corr.shape[1], 1]).unsqueeze(-1).repeat([1,1,1,corr.shape[-1]])
             corr = corr.masked_fill(mask == 0, -1e9)
@@ -240,47 +240,21 @@ class MultiHeadedAttention(nn.Module):
         return hidden
 
 
-class TransformerBlock(nn.Module):
-    def __init__(self, hidden_size, attn_heads, dropout):
-        super(TransformerBlock, self).__init__()
-        self.attention = MultiHeadedAttention(heads=attn_heads, hidden_size=hidden_size, dropout=dropout)
-        self.feed_forward = PositionwiseFeedForward(hidden_size=hidden_size, dropout=dropout)
-        self.input_sublayer = SublayerConnection(hidden_size=hidden_size, dropout=dropout)
-        self.output_sublayer = SublayerConnection(hidden_size=hidden_size, dropout=dropout)
-        self.dropout = nn.Dropout(p=dropout)
-
-    def forward(self, hidden, mask):
-        hidden = self.input_sublayer(hidden, lambda _hidden: self.attention.forward(_hidden, _hidden, _hidden, mask=mask))
-        hidden = self.output_sublayer(hidden, self.feed_forward)
-        return self.dropout(hidden)
-
-
-class Transformer_rep(nn.Module):
-    def __init__(self, args):
-        super(Transformer_rep, self).__init__()
-        self.hidden_size = args.hidden_size
-        self.heads = 4
-        self.dropout = args.dropout
-        self.n_blocks = args.num_blocks
-        self.transformer_blocks = nn.ModuleList(
-            [TransformerBlock(self.hidden_size, self.heads, self.dropout) for _ in range(self.n_blocks)])
-
-    def forward(self, hidden, mask):
-        for transformer in self.transformer_blocks:
-            hidden = transformer.forward(hidden, mask)
-        return hidden
 
 
 class Diffu_xstart(nn.Module):
     def __init__(self, hidden_size, args):
         super(Diffu_xstart, self).__init__()
         self.hidden_size = hidden_size
-        self.linear_item = nn.Linear(self.hidden_size, self.hidden_size)
-        self.linear_xt = nn.Linear(self.hidden_size, self.hidden_size)
-        self.linear_t = nn.Linear(self.hidden_size, self.hidden_size)
+        # self.linear_item = nn.Linear(self.hidden_size, self.hidden_size)
+        # self.linear_xt = nn.Linear(self.hidden_size, self.hidden_size)
+        # self.linear_t = nn.Linear(self.hidden_size, self.hidden_size)
         time_embed_dim = self.hidden_size * 4
-        self.time_embed = nn.Sequential(nn.Linear(self.hidden_size, time_embed_dim), SiLU(), nn.Linear(time_embed_dim, self.hidden_size))
-        self.fuse_linear = nn.Linear(self.hidden_size*3, self.hidden_size)
+        self.time_embed = nn.Sequential(nn.Linear(self.hidden_size, time_embed_dim),
+                                        SiLU(),
+                                        nn.Linear(time_embed_dim, self.hidden_size)
+                                        )
+        # self.fuse_linear = nn.Linear(self.hidden_size*3, self.hidden_size)
         self.att = Transformer_rep(args)
         # self.mlp_model = nn.Linear(self.hidden_size, self.hidden_size)
         # self.gru_model = nn.GRU(self.hidden_size, self.hidden_size, batch_first=True)
@@ -315,9 +289,10 @@ class Diffu_xstart(nn.Module):
         
         lambda_uncertainty = th.normal(mean=th.full(rep_item.shape, self.lambda_uncertainty), std=th.full(rep_item.shape, self.lambda_uncertainty)).to(x_t.device)  ## distribution
         # lambda_uncertainty = self.lambda_uncertainty  ### fixed
-        
+        # if len(x_t.shape) != len(rep_item.shape):
+        x_t = x_t.unsqueeze(1)
         ####  Attention
-        rep_diffu = self.att(rep_item + lambda_uncertainty * x_t.unsqueeze(1), mask_seq)
+        rep_diffu = self.att(rep_item + lambda_uncertainty * x_t, mask_seq)
         rep_diffu = self.norm_diffu_rep(self.dropout(rep_diffu))
         out = rep_diffu[:, -1, :]
 
@@ -508,3 +483,4 @@ class DiffuRec(nn.Module):
 
         x_0, item_rep_out = self.xstart_model(item_rep, x_t, self._scale_timesteps(t), mask_seq)  ##output predict
         return x_0, item_rep_out, weights, t
+        # tgt, seq, weights, t

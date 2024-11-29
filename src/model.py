@@ -7,22 +7,10 @@ import copy
 import numpy as np
 from step_sample import LossAwareSampler
 import torch as th
+import einops
+from common import *
 
 
-class LayerNorm(nn.Module):
-    def __init__(self, hidden_size, eps=1e-12):
-        """Construct a layernorm module in the TF style (epsilon inside the square root).
-        """
-        super(LayerNorm, self).__init__()
-        self.weight = nn.Parameter(torch.ones(hidden_size))
-        self.bias = nn.Parameter(torch.zeros(hidden_size))
-        self.variance_epsilon = eps
-
-    def forward(self, x):
-        u = x.mean(-1, keepdim=True)
-        s = (x - u).pow(2).mean(-1, keepdim=True)
-        x = (x - u) / torch.sqrt(s + self.variance_epsilon)
-        return self.weight * x + self.bias
 
 
 class Att_Diffuse_model(nn.Module):
@@ -41,8 +29,8 @@ class Att_Diffuse_model(nn.Module):
         self.loss_mse = nn.MSELoss()
 
     def diffu_pre(self, item_rep, tag_emb, mask_seq):
-        seq_rep_diffu, item_rep_out, weights, t  = self.diffu(item_rep, tag_emb, mask_seq)
-        return seq_rep_diffu, item_rep_out, weights, t 
+        tgt_rep_diffu, seq_rep_out, weights, t  = self.diffu(item_rep, tag_emb, mask_seq)
+        return tgt_rep_diffu, seq_rep_out, weights, t
 
     def reverse(self, item_rep, noise_x_t, mask_seq):
         reverse_pre = self.diffu.reverse_p_sample(item_rep, noise_x_t, mask_seq)
@@ -72,7 +60,9 @@ class Att_Diffuse_model(nn.Module):
         temperature = 0.07
         scores = torch.matmul(rep_diffu_norm, item_emb_norm.t())/temperature
         """
-        return self.loss_ce(scores, labels.squeeze(-1))
+        return self.loss_ce(scores.reshape(-1,scores.shape[-1]), labels.reshape(-1))
+        # return self.loss_ce(scores, labels.squeeze(-1))
+
 
     def diffu_rep_pre(self, rep_diffu):
         scores = torch.matmul(rep_diffu, self.item_embeddings.weight.t())
@@ -107,7 +97,7 @@ class Att_Diffuse_model(nn.Module):
         return torch.mean(torch.sum(sim_mat, dim=-1)/torch.sum(mask_seq, dim=-1))
 
     def forward(self, sequence, tag, train_flag=True): 
-        seq_length = sequence.size(1)
+        # seq_length = sequence.size(1)
         # position_ids = torch.arange(seq_length, dtype=torch.long, device=sequence.device)
         # position_ids = position_ids.unsqueeze(0).expand_as(sequence)
         # position_embeddings = self.position_embeddings(position_ids)
@@ -123,8 +113,9 @@ class Att_Diffuse_model(nn.Module):
         
         if train_flag:
             tag_emb = self.item_embeddings(tag.squeeze(-1))  ## B x H
-            rep_diffu, rep_item, weights, t = self.diffu_pre(item_embeddings, tag_emb, mask_seq)
-            
+            rep_diffu, rep_seq, weights, t = self.diffu_pre(item_embeddings, tag_emb, mask_seq)
+            # tgt, seq, weights, t
+
             # item_rep_dis = self.regularization_rep(rep_item, mask_seq)
             # seq_rep_dis = self.regularization_seq_item_rep(rep_diffu, rep_item, mask_seq)
             
@@ -141,8 +132,21 @@ class Att_Diffuse_model(nn.Module):
         # scores = torch.matmul(seq_rep, self.item_embeddings.weight.t())
         scores = None
         return scores, rep_diffu, weights, t, item_rep_dis, seq_rep_dis
-        
+    def denoise_sample(self, sequence, tag):
+        item_embeddings = self.item_embeddings(sequence)
+        item_embeddings = self.embed_dropout(item_embeddings)  ## dropout first than layernorm
 
+        # item_embeddings = item_embeddings + position_embeddings
+
+        item_embeddings = self.LayerNorm(item_embeddings)
+
+        mask_seq = (sequence > 0).float()
+        # noise_x_t = th.randn_like(tag_emb)
+        noise_x_t = th.randn_like(item_embeddings[:, -1, :])
+        rep_diffu = self.reverse(item_embeddings, noise_x_t, mask_seq)
+        weights, t, item_rep_dis, seq_rep_dis = None, None, None, None
+        scores = None
+        return scores, rep_diffu, weights, t, item_rep_dis, seq_rep_dis
 def create_model_diffu(args):
     diffu_pre = DiffuRec(args)
     return diffu_pre

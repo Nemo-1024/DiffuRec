@@ -4,10 +4,10 @@ import datetime
 import torch
 import numpy as np
 import copy
-import time
+# import time
 import pickle
-
-
+from tqdm import tqdm
+import time
 def optimizers(model, args):
     if args.optimizer.lower() == 'adam':
         return optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
@@ -86,27 +86,29 @@ def model_train(tra_data_loader, val_data_loader, test_data_loader, model_joint,
     best_metrics_dict = {'Best_HR@5': 0, 'Best_NDCG@5': 0, 'Best_HR@10': 0, 'Best_NDCG@10': 0, 'Best_HR@20': 0, 'Best_NDCG@20': 0}
     best_epoch = {'Best_epoch_HR@5': 0, 'Best_epoch_NDCG@5': 0, 'Best_epoch_HR@10': 0, 'Best_epoch_NDCG@10': 0, 'Best_epoch_HR@20': 0, 'Best_epoch_NDCG@20': 0}
     bad_count = 0
-    
+
     for epoch_temp in range(epochs):        
-        print('Epoch: {}'.format(epoch_temp))
+        # print('Epoch: {}'.format(epoch_temp))
         logger.info('Epoch: {}'.format(epoch_temp))
         model_joint.train()
-    
+        loss_all = []
         flag_update = 0
-        for index_temp, train_batch in enumerate(tra_data_loader):
+        pbr_train = tqdm(enumerate(tra_data_loader),desc='Epoch: {}'.format(epoch_temp),leave=False)
+        for index_temp, train_batch in pbr_train:
             train_batch = [x.to(device) for x in train_batch]
             optimizer.zero_grad()
             scores, diffu_rep, weights, t, item_rep_dis, seq_rep_dis = model_joint(train_batch[0], train_batch[1], train_flag=True)  
             loss_diffu_value = model_joint.loss_diffu_ce(diffu_rep, train_batch[1])  ## use this not above
-          
-            loss_all = loss_diffu_value
-            loss_all.backward()
-        
+
+            loss_diffu_value.backward()
+            loss_all.append(loss_diffu_value.item())
+            pbr_train.set_postfix_str(f'loss={loss_all[-1]:.3f}')
             optimizer.step()
-            if index_temp % int(len(tra_data_loader) / 5 + 1) == 0:
-                print('[%d/%d] Loss: %.4f' % (index_temp, len(tra_data_loader), loss_all.item()))
-                logger.info('[%d/%d] Loss: %.4f' % (index_temp, len(tra_data_loader), loss_all.item()))
-        print("loss in epoch {}: {}".format(epoch_temp, loss_all.item()))
+            # if index_temp % int(len(tra_data_loader) / 5 + 1) == 0:
+            #     print('[%d/%d] Loss: %.4f' % (index_temp, len(tra_data_loader), loss_all[-1]))
+            #     logger.info('[%d/%d] Loss: %.4f' % (index_temp, len(tra_data_loader), loss_all[-1]))
+        print(f"loss in epoch {epoch_temp}: {sum(loss_all)/len(loss_all):.3f}")
+        logger.info(f"loss in epoch {epoch_temp}: {sum(loss_all)/len(loss_all):.3f}")
         lr_scheduler.step()
 
         if epoch_temp != 0 and epoch_temp % args.eval_interval == 0:
@@ -116,7 +118,7 @@ def model_train(tra_data_loader, val_data_loader, test_data_loader, model_joint,
             with torch.no_grad():
                 metrics_dict = {'HR@5': [], 'NDCG@5': [], 'HR@10': [], 'NDCG@10': [], 'HR@20': [], 'NDCG@20': []}
                 # metrics_dict_mean = {}
-                for val_batch in val_data_loader:
+                for val_batch in tqdm(val_data_loader,leave=False):
                     val_batch = [x.to(device) for x in val_batch]
                     scores_rec, rep_diffu, _, _, _, _ = model_joint(val_batch[0], val_batch[1], train_flag=False)
                     scores_rec_diffu = model_joint.diffu_rep_pre(rep_diffu)    ### inner_production
@@ -135,6 +137,7 @@ def model_train(tra_data_loader, val_data_loader, test_data_loader, model_joint,
                     
             if flag_update == 0:
                 bad_count += 1
+                print('patience to end: ', args.patience - bad_count)
             else:
                 print(best_metrics_dict)
                 print(best_epoch)
@@ -150,13 +153,14 @@ def model_train(tra_data_loader, val_data_loader, test_data_loader, model_joint,
         
     if args.eval_interval > epochs:
         best_model = copy.deepcopy(model_joint)
-    
-    
+
+    print('start testing: ', datetime.datetime.now())
+    logger.info('start testing: {}'.format(datetime.datetime.now()))
     top_100_item = []
     with torch.no_grad():
         test_metrics_dict = {'HR@5': [], 'NDCG@5': [], 'HR@10': [], 'NDCG@10': [], 'HR@20': [], 'NDCG@20': []}
         test_metrics_dict_mean = {}
-        for test_batch in test_data_loader:
+        for test_batch in tqdm(test_data_loader,leave=False):
             test_batch = [x.to(device) for x in test_batch]
             scores_rec, rep_diffu, _, _, _, _ = best_model(test_batch[0], test_batch[1], train_flag=False)
             scores_rec_diffu = best_model.diffu_rep_pre(rep_diffu)   ### Inner Production

@@ -12,15 +12,15 @@ from model import create_model_diffu, Att_Diffuse_model
 from trainer import model_train, LSHT_inference
 from collections import Counter
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+# os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--dataset', default='amazon_beauty', help='Dataset name: toys, amazon_beauty, steam, ml-1m')
+parser.add_argument('--dataset', default='toys', help='Dataset name: toys, amazon_beauty, steam, ml-1m')
 parser.add_argument('--log_file', default='log/', help='log dir path')
-parser.add_argument('--random_seed', type=int, default=1997, help='Random seed')  
+parser.add_argument('--random_seed', type=int, default=2024, help='Random seed')
 parser.add_argument('--max_len', type=int, default=50, help='The max length of sequence')
-parser.add_argument('--device', type=str, default='cuda', choices=['cpu', 'cuda'])
+parser.add_argument('--device', type=str, default='cuda:0', choices=['cpu', 'cuda:0','cuda:1'])
 parser.add_argument('--num_gpu', type=int, default=1, help='Number of GPU')
 parser.add_argument('--batch_size', type=int, default=512, help='Batch Size')  
 parser.add_argument("--hidden_size", default=128, type=int, help="hidden size of model")
@@ -48,6 +48,9 @@ parser.add_argument('--description', type=str, default='Diffu_norm_score', help=
 parser.add_argument('--long_head', default=False, help='Long and short sequence, head and long-tail items')
 parser.add_argument('--diversity_measure', default=False, help='Measure the diversity of recommendation results')
 parser.add_argument('--epoch_time_avg', default=False, help='Calculate the average time of one epoch training')
+# parser.add_argument('--model', type=str, default='diffurec',choices=['diffurec', 'dif'], help='Choose the model to train')
+parser.add_argument('--split_onebyone', type=bool, default=True, help='Split sequence one by one')
+# parser.add_argument('--epoch_to_eval', type=int, default='100',help='Least epoch to eval')
 args = parser.parse_args()
 
 print(args)
