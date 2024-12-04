@@ -2,22 +2,27 @@ import torch.utils.data as data_utils
 import torch
 from tqdm import tqdm
 
-class TrainDataset(data_utils.Dataset):
-    def __init__(self, id2seq, max_len):
+class TrainDataset(torch.utils.data.Dataset):
+    def __init__(self, id2seq, max_len,per_token_ag=False):
         self.id2seq = id2seq
         self.max_len = max_len
-
+        self.per_token_ag = per_token_ag
     def __len__(self):
         return len(self.id2seq)
 
     def __getitem__(self, index):
         seq = self._getseq(index)
-        labels = [seq[-1]]
-        tokens = seq[:-1]
-        tokens = tokens[-self.max_len:]
-        mask_len = self.max_len - len(tokens)
-        tokens = [0] * mask_len + tokens
-        return torch.LongTensor(tokens), torch.LongTensor(labels)
+        hist = seq[:-1]
+        hist = hist[-self.max_len:]
+        mask_len = self.max_len - len(hist)
+        hist_pad = [0] * mask_len + hist
+        if self.per_token_ag:
+            target= seq[-len(hist):]
+            # mask_len = self.max_len - len(target)
+            target = [0] * mask_len + target[-len(hist):]
+        else:
+            target = [0] * (self.max_len-1) + [seq[-1]]
+        return torch.LongTensor(hist_pad), torch.LongTensor(target)
 
     def _getseq(self, idx):
         return self.id2seq[idx]
@@ -29,23 +34,24 @@ class Data_Train():
         self.max_len = args.max_len
         self.batch_size = args.batch_size
         self.id_seq = data_train
+        self.per_token_ag = args.per_token_ag
         if args.split_onebyone:
+            # assert self.per_token_ag == False, "split_onebyone only support per_token_ag=False"
             self.split_onebyone()
+
 
 
     def split_onebyone(self):
     # 分割成了最小长度为2的交互递增序列
         self.id_seq = {}
-        self.id_seq_user = {}
         idx = 0
         for user_temp, seq_temp in self.u2seq.items():
             for star in range(len(seq_temp)-1):
                 self.id_seq[idx] = seq_temp[:star+2]
-                self.id_seq_user[idx] = user_temp
                 idx += 1
 
     def get_pytorch_dataloaders(self):
-        dataset = TrainDataset(self.id_seq, self.max_len)
+        dataset = TrainDataset(self.id_seq, self.max_len,self.per_token_ag)
         return data_utils.DataLoader(dataset, batch_size=self.batch_size, shuffle=True, pin_memory=True)
 
 
@@ -149,7 +155,6 @@ class Data_CHLS():
         dataloader = data_utils.DataLoader(dataset, batch_size=self.batch_size, shuffle=False, pin_memory=True)
         return dataloader
 
-
 def _extract_into_tensor(arr, timesteps, broadcast_shape):
     """
     Extract values from a 1-D numpy array for a batch of indices.
@@ -165,3 +170,4 @@ def _extract_into_tensor(arr, timesteps, broadcast_shape):
     while len(res.shape) < len(broadcast_shape):
         res = res[..., None]
     return res.expand(broadcast_shape)
+

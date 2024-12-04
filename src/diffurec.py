@@ -6,241 +6,8 @@ import math
 import torch
 import torch.nn.functional as F
 from common import *
-
-def _extract_into_tensor(arr, timesteps, broadcast_shape):
-    """
-    Extract values from a 1-D numpy array for a batch of indices.
-
-    :param arr: the 1-D numpy array.
-    :param timesteps: a tensor of indices into the array to extract.
-    :param broadcast_shape: a larger shape of K dimensions with the batch
-                            dimension equal to the length of timesteps.
-    :return: a tensor of shape [batch_size, 1, ...] where the shape has K dims.
-    """
-
-    res = th.from_numpy(arr).to(device=timesteps.device)[timesteps].float()
-    while len(res.shape) < len(broadcast_shape):
-        res = res[..., None]
-    return res.expand(broadcast_shape)
-
-
-def get_named_beta_schedule(schedule_name, num_diffusion_timesteps):
-    """
-    Get a pre-defined beta schedule for the given name.
-    The beta schedule library consists of beta schedules which remain similar in the limit of num_diffusion_timesteps. Beta schedules may be added, but should not be removed or changed once they are committed to maintain backwards compatibility.
-    """
-    if schedule_name == "linear":
-        # Linear schedule from Ho et al, extended to work for any number of
-        # diffusion steps.
-        scale = 1000 / num_diffusion_timesteps
-        beta_start = scale * 0.0001
-        beta_end = scale * 0.02
-        return np.linspace(beta_start, beta_end, num_diffusion_timesteps, dtype=np.float64)
-    elif schedule_name == "cosine":
-        return betas_for_alpha_bar(num_diffusion_timesteps, lambda t: math.cos((t + 0.008) / 1.008 * math.pi / 2) ** 2,)
-    elif schedule_name == 'sqrt':
-        return betas_for_alpha_bar(num_diffusion_timesteps,lambda t: 1-np.sqrt(t + 0.0001),  )
-    elif schedule_name == "trunc_cos":
-        return betas_for_alpha_bar_left(num_diffusion_timesteps, lambda t: np.cos((t + 0.1) / 1.1 * np.pi / 2) ** 2,)
-    elif schedule_name == 'trunc_lin':
-        scale = 1000 / num_diffusion_timesteps
-        beta_start = scale * 0.0001 + 0.01
-        beta_end = scale * 0.02 + 0.01
-        if beta_end > 1:
-            beta_end = scale * 0.001 + 0.01
-        return np.linspace(beta_start, beta_end, num_diffusion_timesteps, dtype=np.float64)
-    elif schedule_name == 'pw_lin':
-        scale = 1000 / num_diffusion_timesteps
-        beta_start = scale * 0.0001 + 0.01
-        beta_mid = scale * 0.0001  #scale * 0.02
-        beta_end = scale * 0.02
-        first_part = np.linspace(beta_start, beta_mid, 10, dtype=np.float64)
-        second_part = np.linspace(beta_mid, beta_end, num_diffusion_timesteps - 10 , dtype=np.float64)
-        return np.concatenate([first_part, second_part])
-    else:
-        raise NotImplementedError(f"unknown beta schedule: {schedule_name}")
-
-
-def betas_for_alpha_bar(num_diffusion_timesteps, alpha_bar, max_beta=0.999):
-    """
-    Create a beta schedule that discretizes the given alpha_t_bar function, which defines the cumulative product of (1-beta) over time from t = [0,1].
-    :param num_diffusion_timesteps: the number of betas to produce.
-    :param alpha_bar: a lambda that takes an argument t from 0 to 1 and produces the cumulative product of (1-beta) up to that part of the diffusion process.
-    :param max_beta: the maximum beta to use; use values lower than 1 to prevent singularities.
-    """
-    betas = []
-    for i in range(num_diffusion_timesteps):  ## 2000
-        t1 = i / num_diffusion_timesteps
-        t2 = (i + 1) / num_diffusion_timesteps
-        betas.append(min(1 - alpha_bar(t2) / alpha_bar(t1), max_beta))
-    return np.array(betas)
-
-
-def betas_for_alpha_bar_left(num_diffusion_timesteps, alpha_bar, max_beta=0.999):
-    """
-    Create a beta schedule that discretizes the given alpha_t_bar function, but shifts towards left interval starting from 0
-    which defines the cumulative product of (1-beta) over time from t = [0,1].
-
-    :param num_diffusion_timesteps: the number of betas to produce.
-    :param alpha_bar: a lambda that takes an argument t from 0 to 1 and
-                      produces the cumulative product of (1-beta) up to that
-                      part of the diffusion process.
-    :param max_beta: the maximum beta to use; use values lower than 1 to
-                     prevent singularities.
-    """
-    betas = []
-    betas.append(min(1-alpha_bar(0), max_beta))
-    for i in range(num_diffusion_timesteps-1):
-        t1 = i / num_diffusion_timesteps
-        t2 = (i + 1) / num_diffusion_timesteps
-        betas.append(min(1 - alpha_bar(t2) / alpha_bar(t1), max_beta))
-    return np.array(betas)
-
-
-def space_timesteps(num_timesteps, section_counts):
-    """
-    Create a list of timesteps to use from an original diffusion process,
-    given the number of timesteps we want to take from equally-sized portions
-    of the original process.
-
-    For example, if there's 300 timesteps and the section counts are [10,15,20]
-    then the first 100 timesteps are strided to be 10 timesteps, the second 100
-    are strided to be 15 timesteps, and the final 100 are strided to be 20.
-
-    If the stride is a string starting with "ddim", then the fixed striding
-    from the DDIM paper is used, and only one section is allowed.
-
-    :param num_timesteps: the number of diffusion steps in the original
-                          process to divide up.
-    :param section_counts: either a list of numbers, or a string containing
-                           comma-separated numbers, indicating the step count
-                           per section. As a special case, use "ddimN" where N
-                           is a number of steps to use the striding from the
-                           DDIM paper.
-    :return: a set of diffusion steps from the original process to use.
-    """
-    if isinstance(section_counts, str):
-        if section_counts.startswith("ddim"):
-            desired_count = int(section_counts[len("ddim") :])
-            for i in range(1, num_timesteps):
-                if len(range(0, num_timesteps, i)) == desired_count:
-                    return set(range(0, num_timesteps, i))
-            raise ValueError(
-                f"cannot create exactly {num_timesteps} steps with an integer stride"
-            )
-        section_counts = [int(x) for x in section_counts.split(",")]
-    size_per = num_timesteps // len(section_counts)
-    extra = num_timesteps % len(section_counts)
-    start_idx = 0
-    all_steps = []
-    for i, section_count in enumerate(section_counts):
-        size = size_per + (1 if i < extra else 0)
-        if size < section_count:
-            raise ValueError(
-                f"cannot divide section of {size} steps into {section_count}"
-            )
-        if section_count <= 1:
-            frac_stride = 1
-        else:
-            frac_stride = (size - 1) / (section_count - 1)
-        cur_idx = 0.0
-        taken_steps = []
-        for _ in range(section_count):
-            taken_steps.append(start_idx + round(cur_idx))
-            cur_idx += frac_stride
-        all_steps += taken_steps
-        start_idx += size
-    return set(all_steps)
-
-
-class SiLU(nn.Module):
-    def forward(self, x):
-        return x * th.sigmoid(x)
-
-
-class LayerNorm(nn.Module):
-    def __init__(self, hidden_size, eps=1e-12):
-        """Construct a layernorm module in the TF style (epsilon inside the square root).
-        """
-        super(LayerNorm, self).__init__()
-        self.weight = nn.Parameter(torch.ones(hidden_size))
-        self.bias = nn.Parameter(torch.zeros(hidden_size))
-        self.variance_epsilon = eps
-
-    def forward(self, x):
-        u = x.mean(-1, keepdim=True)
-        s = (x - u).pow(2).mean(-1, keepdim=True)
-        x = (x - u) / torch.sqrt(s + self.variance_epsilon)
-        return self.weight * x + self.bias
-
-
-class SublayerConnection(nn.Module):
-    """
-    A residual connection followed by a layer norm.
-    Note for code simplicity the norm is first as opposed to last.
-    """
-
-    def __init__(self, hidden_size, dropout):
-        super(SublayerConnection, self).__init__()
-        self.norm = LayerNorm(hidden_size)
-        self.dropout = nn.Dropout(dropout)
-
-    def forward(self, x, sublayer):
-        "Apply residual connection to any sublayer with the same size."
-        return x + self.dropout(sublayer(self.norm(x)))
-
-
-class PositionwiseFeedForward(nn.Module):
-    "Implements FFN equation."
-
-    def __init__(self, hidden_size, dropout=0.1):
-        super(PositionwiseFeedForward, self).__init__()
-        self.w_1 = nn.Linear(hidden_size, hidden_size*4)
-        self.w_2 = nn.Linear(hidden_size*4, hidden_size)
-        self.dropout = nn.Dropout(dropout)
-        self.init_weights()
-
-    def init_weights(self):
-        nn.init.xavier_normal_(self.w_1.weight)
-        nn.init.xavier_normal_(self.w_2.weight)
-
-    def forward(self, hidden):
-        hidden = self.w_1(hidden)
-        activation = 0.5 * hidden * (1 + torch.tanh(math.sqrt(2 / math.pi) * (hidden + 0.044715 * torch.pow(hidden, 3))))
-        return self.w_2(self.dropout(activation))
-
-
-class MultiHeadedAttention(nn.Module):
-    def __init__(self, heads, hidden_size, dropout):
-        super().__init__()
-        assert hidden_size % heads == 0
-        self.size_head = hidden_size // heads
-        self.num_heads = heads
-        self.linear_layers = nn.ModuleList([nn.Linear(hidden_size, hidden_size) for _ in range(3)])
-        self.w_layer = nn.Linear(hidden_size, hidden_size)
-        self.dropout = nn.Dropout(p=dropout)
-        self.init_weights()
-
-    def init_weights(self):
-        nn.init.xavier_normal_(self.w_layer.weight)
-
-    def forward(self, q, k, v, mask=None):
-        batch_size = q.shape[0]
-        q, k, v = [l(x).view(batch_size, -1, self.num_heads, self.size_head).transpose(1, 2) for l, x in zip(self.linear_layers, (q, k, v))]
-        corr = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(q.size(-1))
-
-        if mask is not None:
-            mask = mask.unsqueeze(1).repeat([1, corr.shape[1], 1]).unsqueeze(-1).repeat([1,1,1,corr.shape[-1]])
-            corr = corr.masked_fill(mask == 0, -1e9)
-        prob_attn = F.softmax(corr, dim=-1)
-        if self.dropout is not None:
-            prob_attn = self.dropout(prob_attn)
-        hidden = torch.matmul(prob_attn, v)
-        hidden = self.w_layer(hidden.transpose(1, 2).contiguous().view(batch_size, -1, self.num_heads * self.size_head))
-        return hidden
-
-
-
+from utils import _extract_into_tensor
+from step_sample import *
 
 class Diffu_xstart(nn.Module):
     def __init__(self, hidden_size, args):
@@ -262,6 +29,22 @@ class Diffu_xstart(nn.Module):
         self.lambda_uncertainty = args.lambda_uncertainty
         self.dropout = nn.Dropout(args.dropout)
         self.norm_diffu_rep = LayerNorm(self.hidden_size)
+        self.mlp = nn.Sequential(
+            nn.Linear(self.hidden_size, 4 * self.hidden_size),
+            nn.SiLU(),
+            nn.Dropout(args.dropout),
+            nn.Linear(4 * self.hidden_size, self.hidden_size)
+        )
+        self.model = args.dif_decoder
+
+    def dif_decoder(self, seq, mask):
+        if self.model == 'mlp':
+            return self.mlp(seq)
+        elif self.model == 'att':
+            return self.att(seq,mask)
+        else:
+            print('wrong dif_decoder')
+            return None
 
     def timestep_embedding(self, timesteps, dim, max_period=10000):
         """
@@ -273,6 +56,7 @@ class Diffu_xstart(nn.Module):
         :param max_period: controls the minimum frequency of the embeddings.
         :return: an [N x dim] Tensor of positional embeddings.
         """
+        assert dim % 2 == 0
         half = dim // 2
         freqs = th.exp(-math.log(max_period) * th.arange(start=0, end=half, dtype=th.float32) / half).to(device=timesteps.device)
         args = timesteps[:, None].float() * freqs[None]
@@ -283,25 +67,35 @@ class Diffu_xstart(nn.Module):
 
     def forward(self, rep_item, x_t, t, mask_seq):
         emb_t = self.time_embed(self.timestep_embedding(t, self.hidden_size))
-        x_t = x_t + emb_t
-        
+        # print(x_t.shape,emb_t.shape) #[512, 50, 128] or [512, 1, 128],   [512,128]
+        x_t = x_t + emb_t.unsqueeze(1)
+
         # lambda_uncertainty = th.normal(mean=th.full(rep_item.shape, 1.0), std=th.full(rep_item.shape, 1.0)).to(x_t.device)
-        
+
         lambda_uncertainty = th.normal(mean=th.full(rep_item.shape, self.lambda_uncertainty), std=th.full(rep_item.shape, self.lambda_uncertainty)).to(x_t.device)  ## distribution
         # lambda_uncertainty = self.lambda_uncertainty  ### fixed
-        # if len(x_t.shape) != len(rep_item.shape):
-        x_t = x_t.unsqueeze(1)
-        ####  Attention
-        rep_diffu = self.att(rep_item + lambda_uncertainty * x_t, mask_seq)
-        rep_diffu = self.norm_diffu_rep(self.dropout(rep_diffu))
+
+        # print(lambda_uncertainty.shape, x_t.shape, rep_item.shape)
+        rep_diffu = self.dif_decoder(rep_item + lambda_uncertainty * x_t, mask_seq)
         out = rep_diffu[:, -1, :]
+
+        ####  Attention
+        # rep_diffu = self.att(rep_item + lambda_uncertainty * x_t, mask_seq)
+        # # rep_diffu = self.att(rep_item,mask_seq)
+        # rep_diffu = self.norm_diffu_rep(self.dropout(rep_diffu))
+        # out = rep_diffu[:, -1, :]
+
+        ### MLP
+        # rep_diffu = self.mlp(rep_item + lambda_uncertainty * x_t)
+        # # rep_diffu = self.norm_diffu_rep(self.dropout(rep_diffu))
+        # out = rep_diffu[:, -1, :]
 
 
         ## rep_diffu = self.att(rep_item, mask_seq)  ## do not use
         ## rep_diffu = self.dropout(self.norm_diffu_rep(rep_diffu))  ## do not use
-        
+
         ####
-        
+
         #### GRU
         # output, hn = self.gru_model(rep_item + lambda_uncertainty * x_t.unsqueeze(1))
         # output = self.norm_diffu_rep(self.dropout(output))
@@ -309,18 +103,17 @@ class Diffu_xstart(nn.Module):
         ## # out = hn.squeeze(0)
         # rep_diffu = None
         ####
-        
+
         ### MLP
         # output = self.mlp_model(rep_item + lambda_uncertainty * x_t.unsqueeze(1))
         # output = self.norm_diffu_rep(self.dropout(output))
         # out = output[:,-1,:]
         # rep_diffu = None
         ###
-        
-        # out = out + self.lambda_uncertainty * x_t
-        
-        return out, rep_diffu
 
+        # out = out + self.lambda_uncertainty * x_t
+
+        return out, rep_diffu
 
 class DiffuRec(nn.Module):
     def __init__(self, args,):
@@ -365,12 +158,12 @@ class DiffuRec(nn.Module):
         self.rescale_timesteps = args.rescale_timesteps
         self.original_num_steps = len(betas)
 
-        self.xstart_model = Diffu_xstart(self.hidden_size, args)
+        # self.xstart_model = self.dif_model(args)
+        self.net = Diffu_xstart(self.hidden_size, args)
 
     def get_betas(self, noise_schedule, diffusion_steps):
         betas = get_named_beta_schedule(noise_schedule, diffusion_steps)  ## array, generate beta
         return betas
-    
 
     def q_sample(self, x_start, t, noise=None, mask=None):
         """
@@ -443,11 +236,12 @@ class DiffuRec(nn.Module):
         return posterior_mean
 
     def p_mean_variance(self, rep_item, x_t, t, mask_seq):
-        model_output, _ = self.xstart_model(rep_item, x_t, self._scale_timesteps(t), mask_seq)
-        
-        x_0 = model_output  ##output predict
+        # print("func p_mean_variance", rep_item.shape,x_t.shape)
+        model_output, _ = self.net(rep_item, x_t, self._scale_timesteps(t), mask_seq)
+
+        x_0 = model_output.unsqueeze(1)  ##output predict
         # x_0 = self._predict_xstart_from_eps(x_t, t, model_output)  ## eps predict
-        
+
         model_log_variance = np.log(np.append(self.posterior_variance[1], self.betas[1:]))
         model_log_variance = _extract_into_tensor(model_log_variance, t, x_t.shape)
         
@@ -457,30 +251,36 @@ class DiffuRec(nn.Module):
     def p_sample(self, item_rep, noise_x_t, t, mask_seq):
         model_mean, model_log_variance = self.p_mean_variance(item_rep, noise_x_t, t, mask_seq)
         noise = th.randn_like(noise_x_t)
+        # print("noise shape in func p_sample",noise.shape)
         nonzero_mask = ((t != 0).float().view(-1, *([1] * (len(noise_x_t.shape) - 1))))  # no noise when t == 0
         sample_xt = model_mean + nonzero_mask * th.exp(0.5 * model_log_variance) * noise  ## sample x_{t-1} from the \mu(x_{t-1}) distribution based on the reparameter trick
         return sample_xt
 
     def reverse_p_sample(self, item_rep, noise_x_t, mask_seq):
-        device = next(self.xstart_model.parameters()).device
+        # return self.xstart_model(item_rep, noise_x_t, th.tensor([1] * item_rep.shape[0], device=item_rep.device), mask_seq)[0]
+        device = item_rep.device
         indices = list(range(self.num_timesteps))[::-1]
         
         for i in indices: # from T to 0, reversion iteration  
             t = th.tensor([i] * item_rep.shape[0], device=device)
             with th.no_grad():
                 noise_x_t = self.p_sample(item_rep, noise_x_t, t, mask_seq)
-        return noise_x_t 
+        return noise_x_t
 
-    def forward(self, item_rep, item_tag, mask_seq):        
+    def forward(self, item_rep, item_tag, mask_seq,mask_tag):
         noise = th.randn_like(item_tag)
         t, weights = self.schedule_sampler.sample(item_rep.shape[0], item_tag.device) ## t is sampled from schedule_sampler
-        
-        # t = self.scale_t(t)
-        x_t = self.q_sample(item_tag, t, noise=noise)
-        
+        x_t = self.q_sample(item_tag, t, noise=noise,mask=mask_tag)
+
         # eps, item_rep_out = self.xstart_model(item_rep, x_t, self._scale_timesteps(t), mask_seq)  ## eps predict
         # x_0 = self._predict_xstart_from_eps(x_t, t, eps)
-
-        x_0, item_rep_out = self.xstart_model(item_rep, x_t, self._scale_timesteps(t), mask_seq)  ##output predict
+        # print("func forward", item_rep.shape, x_t.shape)
+        x_0, item_rep_out = self.net(item_rep, x_t, self._scale_timesteps(t), mask_seq)  ##output predict
         return x_0, item_rep_out, weights, t
         # tgt, seq, weights, t
+
+class Mlp_dif(DiffuRec):
+    def __init__(self, args):
+        super().__init__(args)
+    def xstart_model(self,item_rep, x_t, t, mask_seq):
+        return self.mlp(item_rep)

@@ -86,19 +86,21 @@ def model_train(tra_data_loader, val_data_loader, test_data_loader, model_joint,
     best_metrics_dict = {'Best_HR@5': 0, 'Best_NDCG@5': 0, 'Best_HR@10': 0, 'Best_NDCG@10': 0, 'Best_HR@20': 0, 'Best_NDCG@20': 0}
     best_epoch = {'Best_epoch_HR@5': 0, 'Best_epoch_NDCG@5': 0, 'Best_epoch_HR@10': 0, 'Best_epoch_NDCG@10': 0, 'Best_epoch_HR@20': 0, 'Best_epoch_NDCG@20': 0}
     bad_count = 0
-
+    logger.info(model_joint)
+    print(model_joint)
     for epoch_temp in range(epochs):        
         # print('Epoch: {}'.format(epoch_temp))
         logger.info('Epoch: {}'.format(epoch_temp))
         model_joint.train()
         loss_all = []
         flag_update = 0
-        pbr_train = tqdm(enumerate(tra_data_loader),desc='Epoch: {}'.format(epoch_temp),leave=False)
+        pbr_train = tqdm(enumerate(tra_data_loader),desc='Epoch: {}'.format(epoch_temp),leave=False, total=len(tra_data_loader))
+        # print('len',len(tra_data_loader))
         for index_temp, train_batch in pbr_train:
             train_batch = [x.to(device) for x in train_batch]
             optimizer.zero_grad()
-            scores, diffu_rep, weights, t, item_rep_dis, seq_rep_dis = model_joint(train_batch[0], train_batch[1], train_flag=True)  
-            loss_diffu_value = model_joint.loss_diffu_ce(diffu_rep, train_batch[1])  ## use this not above
+            out_seq, last_item, weights, t, item_rep_dis, seq_rep_dis = model_joint(train_batch[0], train_batch[1], train_flag=True)
+            loss_diffu_value = model_joint.loss_diffu_ce(out_seq,last_item, train_batch[1])  ## use this not above
 
             loss_diffu_value.backward()
             loss_all.append(loss_diffu_value.item())
@@ -120,8 +122,9 @@ def model_train(tra_data_loader, val_data_loader, test_data_loader, model_joint,
                 # metrics_dict_mean = {}
                 for val_batch in tqdm(val_data_loader,leave=False):
                     val_batch = [x.to(device) for x in val_batch]
-                    scores_rec, rep_diffu, _, _, _, _ = model_joint(val_batch[0], val_batch[1], train_flag=False)
-                    scores_rec_diffu = model_joint.diffu_rep_pre(rep_diffu)    ### inner_production
+                    out_seq, last_item, _, _, _, _ = model_joint(val_batch[0], val_batch[1], train_flag=False)
+
+                    scores_rec_diffu = model_joint.diffu_rep_pre(last_item)    ### inner_production
                     # scores_rec_diffu = model_joint.routing_rep_pre(rep_diffu)   ### routing_rep_pre
                     metrics = hrs_and_ndcgs_k(scores_rec_diffu, val_batch[1], metric_ks)
                     for k, v in metrics.items():
@@ -162,8 +165,8 @@ def model_train(tra_data_loader, val_data_loader, test_data_loader, model_joint,
         test_metrics_dict_mean = {}
         for test_batch in tqdm(test_data_loader,leave=False):
             test_batch = [x.to(device) for x in test_batch]
-            scores_rec, rep_diffu, _, _, _, _ = best_model(test_batch[0], test_batch[1], train_flag=False)
-            scores_rec_diffu = best_model.diffu_rep_pre(rep_diffu)   ### Inner Production
+            out_seq, last_item, _, _, _, _ = best_model(test_batch[0], test_batch[1], train_flag=False)
+            scores_rec_diffu = best_model.diffu_rep_pre(last_item)   ### Inner Production
             # scores_rec_diffu = best_model.routing_rep_pre(rep_diffu)   ### routing
             
             _, indices = torch.topk(scores_rec_diffu, k=100)
